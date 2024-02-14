@@ -13,16 +13,17 @@ from flask import Flask, request, send_file, jsonify
 from openai import OpenAI
 from openai import OpenAIError
 
+import boto3
+
+from io import BytesIO
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
 
-def generate_save_file_name(directory: Path) -> Path:
+def generate_save_file_name() -> str:
     current_time = datetime.now().strftime('%Y%m%d-%H%M%S')
-    return directory / Path(
-        f"{current_time}-{''.join(random.choices(string.ascii_letters, k=3))}.jpg"
-    )
+    return f"{current_time}-{''.join(random.choices(string.ascii_letters, k=3))}.png"
 
 
 def api_key() -> Optional[str]:
@@ -32,32 +33,42 @@ def api_key() -> Optional[str]:
     return None
 
 
-def save_file(file_path: Path, metadata: dict, url: str):
-    log.info("Saving file to %s", file_path)
+def upload_file_to_s3(file_name: str, metadata: dict, url: str):
+    s3_bucket_name = os.environ.get("S3_BUCKET_NAME")
+    aws_access_key_id = os.environ.get("S3_ACCESS_KEY_ID")
+    aws_secret_access_key = os.environ.get("S3_SECRET_ACCESS_KEY")
+    s3_endpoint_url = os.environ.get("S3_ENDPOINT")
+
+    s3_client = boto3.client(
+        's3',
+        endpoint_url=s3_endpoint_url,
+        aws_access_key_id=aws_access_key_id,
+        aws_secret_access_key=aws_secret_access_key
+    )
+
+    log.info("Uploading file to S3 bucket %s", s3_bucket_name)
     with requests.get(url, stream=True, timeout=120) as r:
         r.raise_for_status()
-        with open(file_path, "wb") as f:
+        with BytesIO() as buffer:
+            # Читаем содержимое файла по частям
             for chunk in r.iter_content():
-                f.write(chunk)
-    with open(file_path.with_suffix(".json"), "w", encoding='utf-8') as f:
-        f.writelines(json.dumps(metadata, indent=4))
+                if chunk:  # фильтр для удаления keep-alive новых чанков
+                    buffer.write(chunk)
+            buffer.seek(0)
+            s3_client.upload_fileobj(buffer, s3_bucket_name, file_name)
 
-    log.info("File saved successfully %s", file_path)
+    # Загружаем метаданные
+    metadata_key = file_name.replace('.png', '.json')
+    s3_client.put_object(
+        Bucket=s3_bucket_name,
+        Key=metadata_key,
+        Body=json.dumps(metadata, indent=4).encode('utf-8')
+    )
+
+    log.info("File and metadata uploaded successfully to %s/%s", s3_bucket_name, file_name)
 
 
-def get_save_dir() -> Optional[Path]:
-    directory_env = os.environ.get("SAVE_DIR")
-    if directory_env:
-        directory = Path(directory_env)
-        log.info("Saving files to %s", directory)
-        return directory
-
-    log.info("Do not save files")
-    return None
-
-save_dir = get_save_dir()
-
-client = OpenAI(api_key=api_key())
+client = OpenAI(api_key=api_key()) # base_url="https://api.proxyapi.ru/openai/v1"
 
 app = Flask(__name__)
 
@@ -66,17 +77,23 @@ app = Flask(__name__)
 def generate():
     # Get the text from the user
     prompt = request.json["prompt"]
-    hd = request.json["hd"]
-    size = request.json["size"]
-
+    resolution = request.json["resolution"]
+    model_name = request.json["model"]
     log.info("Sending request to OpenAI with prompt: %s", prompt)
+
+    if model_name == "dall-e-3-hd":
+        model = "dall-e-3"
+        quality = "hd"
+    else:
+        model = model_name
+        quality = "standard"
 
     try:
         response = client.images.generate(
-            model="dall-e-3",
+            model=model,
             prompt=prompt,
-            size=size,
-            quality=hd,
+            size=resolution,
+            quality=quality,
             n=1,
         )
     except OpenAIError as e:
@@ -87,10 +104,8 @@ def generate():
 
     # Fire and Forget, It will download the file in the background. It is not production-ready, but that should
     # be enough for now
-    if save_dir:
-        file_path = generate_save_file_name(save_dir)
-        metadata = {**response.data[0].model_dump(), "prompt":prompt}
-        Thread(target=save_file, args=(file_path, metadata, url)).start()
+    metadata = {**response.data[0].model_dump(), "prompt":prompt}
+    Thread(target=upload_file_to_s3, args=(generate_save_file_name(), metadata, url)).start()
 
     return jsonify(response.data[0].model_dump())
 
@@ -99,6 +114,24 @@ def generate():
 def index():
     return send_file("index.html", mimetype="text/html")
 
+@app.route("/balance", methods=["GET"])
+def balance():
+    url = 'https://'
+
+    headers = {
+        'Authorization': 'Bearer '
+    }
+
+    response = requests.get(url, headers=headers)
+
+    if response.status_code == 200:
+        try:
+            balance = response.json().get("balance")
+            return jsonify({'balance': balance})
+        except ValueError:
+            return b'Invalid response from external API', 500
+    else:
+        return response.content, response.status_code
 
 @app.route("/inprogress.gif", methods=["GET"])
 def inprogress():

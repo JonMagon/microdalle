@@ -1,76 +1,205 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
-
 <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <link href="https://stackpath.bootstrapcdn.com/bootstrap/4.3.1/css/bootstrap.min.css" rel="stylesheet">
-    <title>MicroDallE</title>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Image Generator</title>
+<link href="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css" rel="stylesheet">
+<link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.1/css/all.min.css" rel="stylesheet">
+<style>
+    #result-image-placeholder {
+        background: #f0f0f0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 2rem;
+        color: #666;
+    }
+    .download-btn {
+        display: none;
+    }
+</style>
 </head>
-
 <body>
-    <div class="container">
-        <form id="image-form" class="mb-3">
-            <div class="form-group">
-                <label for="prompt">Prompt</label>
-                <textarea class="form-control" id="prompt" rows="3"></textarea>
-            </div>
-            <div class="form-check">
-                <input type="checkbox" class="form-check-input" id="hd">
-                <label class="form-check-label" for="hd">HD</label>
-            </div>
-            <div class="form-group">
-                <label for="size">Size</label>
-                <select class="form-control" id="size">
-                    <option>1024x1024</option>
-                    <option>1024x1792</option>
-                    <option>1792x1024</option>
-                </select>
-            </div>
-            <button type="submit" class="btn btn-primary">Generate</button>
-        </form>
-        <img class="img-fluid" id="result-image"
-            src="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==" alt="Generated Image">
-        <div id="error">
+
+<div class="container mt-5">
+    <h2>Image Generator Service</h2>
+    <div class="alert alert-info" role="alert">
+        Current Balance: <span id="balance">0</span>
+        <button id="refresh-balance" class="btn btn-info btn-sm ml-2">
+            <i class="fas fa-sync-alt"></i>
+        </button>
+    </div>
+    <form id="image-form">
+        <div class="form-group">
+            <label for="prompt">Prompt:</label>
+            <input type="text" class="form-control" id="prompt" required>
         </div>
+        <div class="form-group">
+            <label for="model">Model:</label>
+            <select class="form-control" id="model" required>
+                <option value="DALL-E 2">DALL-E 2</option>
+                <option value="DALL-E 3">DALL-E 3</option>
+                <option value="DALL-E 3 HD">DALL-E 3 (HD)</option>
+            </select>
+        </div>
+        <div class="form-group">
+            <label for="resolution">Resolution:</label>
+            <select class="form-control" id="resolution" required>
+                <!-- Options will be populated based on the model selection -->
+            </select>
+        </div>
+        <p>Cost: $<span id="cost">0</span></p>
+        <div id="result-image-placeholder" style="width: 256px; height: 256px;">
+            Placeholder
+        </div>
+        <img id="result-image" src="" alt="Generated Image" style="display:none;"/>
+        <button type="submit" class="btn btn-primary mt-3">Generate</button>
+        <a href="#" id="download-btn" class="btn btn-success mt-3 download-btn">
+            <i class="fas fa-download"></i> Download
+        </a>
+    </form>
+    <div id="error" class="text-danger mt-3"></div>
+</div>
 
-        <script src="https://code.jquery.com/jquery-3.5.1.slim.min.js"></script>
-        <script src="https://stackpath.bootstrapcdn.com/bootstrap/4.3.1/js/bootstrap.min.js"></script>
+<script src="https://code.jquery.com/jquery-3.5.1.slim.min.js"></script>
+<script src="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/js/bootstrap.min.js"></script>
+<script>
+    const resolutionOptions = {
+        'DALL-E 2': ['256x256', '512x512', '1024x1024'],
+        'DALL-E 3': ['1024x1024', '1792x1024', '1024x1792'],
+        'DALL-E 3 HD': ['1024x1024', '1792x1024', '1024x1792']
+    };
 
-        <script>
-            document.getElementById('image-form').addEventListener('submit', function (event) {
-                event.preventDefault();
-                var prompt = document.getElementById('prompt').value;
-                var hd = document.getElementById('hd').checked ? "hd" : "standard";
-                var size = document.getElementById('size').value;
-                document.getElementById('error').textContent = "";
+    const costMapping = {
+        'DALL-E 2': {
+            '256x256': 0.016,
+            '512x512': 0.018,
+            '1024x1024': 0.020
+        },
+        'DALL-E 3': {
+            '1024x1024': 0.040,
+            '1792x1024': 0.080,
+            '1024x1792': 0.080
+        },
+        'DALL-E 3 HD': {
+            '1024x1024': 0.080,
+            '1792x1024': 0.120,
+            '1024x1792': 0.120
+        }
+    };
 
-                document.getElementById('result-image').src = "inprogress.gif";
+    let currentBalance = 0; // Starting balance, this should be fetched or stored in user's session or database
 
-                fetch('/generate', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({ prompt: prompt, hd: hd, size: size })
-                })
-                    .then(response => {
-                        if (!response.ok) {
-                            return response.text().then(content => {
-                                throw new Error('Invalid response: ' + content);
-                            })
-                        }
-                        return response.json()
-                    })
-                    .then(data => {
-                        document.getElementById('result-image').src = data.url;
-                    })
-                    .catch(error => {
-                        document.getElementById('error').textContent = error;
-                    });
-            });
-        </script>
+    function updateResolutionOptions() {
+        const model = document.getElementById('model').value;
+        const resolutionSelect = document.getElementById('resolution');
+        resolutionSelect.innerHTML = '';
+        resolutionOptions[model].forEach(res => {
+            const option = document.createElement('option');
+            option.value = res;
+            option.textContent = res;
+            resolutionSelect.appendChild(option);
+        });
+        updateCostAndPlaceholder();
+    }
+
+    function updateCostAndPlaceholder() {
+        const model = document.getElementById('model').value;
+        const resolution = document.getElementById('resolution').value;
+        const cost = costMapping[model][resolution];
+        document.getElementById('cost').textContent = cost;
+
+        const placeholder = document.getElementById('result-image-placeholder');
+        const [width, height] = resolution.split('x');
+        placeholder.style.width = `${width}px`;
+        placeholder.style.height = `${height}px`;
+        placeholder.textContent = `${width} x ${height}`;
+    }
+
+    function fetchBalance() {
+        document.getElementById('balance').textContent = "Checking...";
+        fetch('/balance')
+        .then(response => response.json())
+        .then(data => {
+            currentBalance = data.balance;
+            document.getElementById('balance').textContent = '$' + currentBalance;
+        })
+        .catch(error => {
+            console.error('Error fetching balance:', error);
+            document.getElementById('balance').textContent = "Error";
+        });
+    }
+
+    function downloadImage() {
+        const link = document.createElement('a');
+        link.href = document.getElementById('result-image').src;
+        link.download = 'generated-image.png';
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+    }
+
+    document.getElementById('refresh-balance').addEventListener('click', fetchBalance);
+    document.getElementById('download-btn').addEventListener('click', downloadImage);
+    document.getElementById('model').addEventListener('change', updateResolutionOptions);
+    document.getElementById('resolution').addEventListener('change', updateCostAndPlaceholder);
+
+    document.getElementById('image-form').addEventListener('submit', function (event) {
+        event.preventDefault();
+        const prompt = document.getElementById('prompt').value;
+        const model = document.getElementById('model').value;
+        const resolution = document.getElementById('resolution').value;
+        const cost = costMapping[model][resolution];
+        if (cost > currentBalance) {
+            document.getElementById('error').textContent = "Insufficient credits!";
+            return;
+        }
+        currentBalance -= cost;
+        document.getElementById('balance').textContent = '$' + currentBalance;
+        document.getElementById('error').textContent = "";
+        document.getElementById('result-image-placeholder').innerHTML = '<div class="spinner-border spinner-border-sm" role="status"><span class="sr-only">Loading...</span></div>';
+        document.getElementById('result-image-placeholder').style.display = 'flex';
+        document.getElementById('result-image').style.display = 'none';
+
+        document.getElementById('download-btn').classList.add('download-btn');
+
+        fetch('/generate', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ prompt: prompt, model: model.replace(/\s+/g, '-').toLowerCase(), resolution: resolution })
+        })
+        .then(response => {
+            if (!response.ok) {
+                throw new Error('Network response was not ok.');
+            }
+            return response.json();
+        })
+        .then(data => {
+            document.getElementById('result-image-placeholder').textContent = '';
+            document.getElementById('result-image-placeholder').style.display = 'none';
+            document.getElementById('result-image').src = data.url;
+            document.getElementById('result-image').style.display = 'block';
+            document.getElementById('download-btn').classList.remove('download-btn');
+
+            fetchBalance(); // Update balance after successful generation
+        })
+        .catch(error => {
+            document.getElementById('result-image-placeholder').textContent = 'Error';
+            document.getElementById('error').textContent = error;
+            currentBalance += cost; // Refund the cost since the generation failed
+            document.getElementById('balance').textContent = '$' + currentBalance;
+        });
+    });
+
+    // Initialize the form with the default model
+    window.onload = function() {
+        fetchBalance(); // Fetch balance on page load
+        updateResolutionOptions(); // Populate resolution options based on default model
+    };
+</script>
 
 </body>
-
 </html>
